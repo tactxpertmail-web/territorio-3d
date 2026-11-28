@@ -1,0 +1,48 @@
+name: Graphics smoke test
+on:
+  push:
+    paths:
+      - index.html
+      - .github/workflows/graphics-test.yml
+  workflow_dispatch:
+jobs:
+  graphics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-save playwright
+      - run: npx playwright install --with-deps chromium
+      - name: Test real browser rendering
+        run: |
+          python3 -m http.server 8765 > /tmp/territorio-server.log 2>&1 &
+          node --input-type=module <<'JS'
+          import { chromium } from 'playwright';
+          import fs from 'node:fs/promises';
+          const browser = await chromium.launch({args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});
+          const page = await browser.newPage({viewport:{width:1280,height:720}});
+          const errors=[];
+          page.on('pageerror', e=>errors.push(String(e)));
+          await fs.mkdir('qa-output',{recursive:true});
+          try {
+            await page.goto('http://127.0.0.1:8765/index.html',{waitUntil:'domcontentloaded'});
+            await page.waitForFunction(()=>window.territorioReady===true,{timeout:60000});
+            await page.evaluate(async()=>{if(typeof enablePremium400==='function')await enablePremium400();});
+            await page.waitForFunction(()=>window.territorioQA477?.report().engine==='Babylon',{timeout:60000});
+            await page.waitForTimeout(5000);
+            const report=await page.evaluate(()=>window.territorioQA477.report());
+            await fs.writeFile('qa-output/report.json',JSON.stringify({report,errors},null,2));
+            await page.screenshot({path:'qa-output/render.png'});
+            if(!report.meshes||!report.vertices||errors.length)throw Error('Graphics smoke test failed');
+          } finally {
+            await browser.close();
+          }
+          JS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: graphics-diagnostics
+          path: qa-output/
